@@ -1,0 +1,169 @@
+---
+title: "Data_prepocessing"
+author: "Nurulain Ibrahim"
+date: "2023-11-15"
+output: html_document
+---
+
+```{r}
+library(tibble)
+library(dplyr)
+library(caret)
+```
+
+
+```{r}
+df1 <- read.csv("3_REDISCOVER_Original_Finalized_withMetadata.csv",
+                     header = T)
+df2<- read.csv("4_REDISCOVER_Original_Finalized_withNA.csv", header = T)
+```
+
+
+
+```{r}
+# Merge DF2 with the 'fasting' column from DF1 based on 'patient_ID'
+result_df<-merge(x = df2, y = df1[ , c("patient_ID", "fasting")], by = "patient_ID", all.x=TRUE)
+```
+
+
+```{r}
+table(result_df$fasting)
+```
+############################### Recode the features ###########################
+
+```{r}
+raw_data<-result_df
+```
+
+
+# Recode recruitment years
+```{r}
+raw_data <- raw_data %>% mutate_at(vars(recruitment_year),
+                                   recode,
+                                   "1"="2007",
+                                   "2"="2008",
+                                   "3"="2009",
+                                   "4"="2010",
+                                   "5"="2011",
+                                   "6"="2012",
+                                   "7"="2013",
+                                   "9"="2015",
+                                   "2014"="2014",
+                                   "2015"="2015")
+```
+
+```{r}
+raw_data$recruitment_year <- as.numeric(raw_data$recruitment_year)
+```
+
+```{r}
+# Combine F_MI with F_SAKIT JANTUNG into new MI
+  ## Combine F_MI with F_SAKIT JANTUNG
+  raw_data<- transform(raw_data, F_MI=ifelse(F_MI==1 | F_SAKITJANTUNG==1, 1, 0))
+  
+  ## Combine F_MI_date with F_SAKIT_JANTUNG_DATE
+  raw_data<- transform(raw_data,F_MI_DATE=ifelse(nchar(raw_data$F_SAKITJANTUNG_DATE) > 1,
+                                              raw_data$F_SAKITJANTUNG_DATE,
+                                              raw_data$F_MI_DATE))
+# checkDate <- data.frame(patientID = raw_data$patient_ID,
+#                         F_MI = raw_data$F_MI,
+#                         F_MI_DATE = raw_data$F_MI_DATE,
+#                         F_SJ = raw_data$F_SAKITJANTUNG,
+#                         F_SJ_DATE = raw_data$F_SAKITJANTUNG_DATE,
+#                         F_newMI = raw_data$newCol,
+#                         F_newMI_DATE = raw_data$newDate)
+
+```
+
+
+#summary of cardiometabolic markers
+```{r}
+result_summary <- summary(select(raw_data, glucose_baseline, tc_baseline, hdl_baseline, ldl_baseline, tg_baseline))
+```
+
+```{r}
+result_summary
+```
+
+
+
+#Replace glucose, TC, TG, HDL and LDL values with NA for rows with fasting == 2 or NA
+
+```{r}
+# Columns to replace with NA
+columns_to_replace <- c("glucose_baseline", "tc_baseline", "hdl_baseline", "ldl_baseline", "tg_baseline")
+
+# Replace values with NA for rows where 'fasting' is 2
+raw_data[raw_data$fasting %in% c(2, NA), columns_to_replace] <- NA
+```
+
+
+#Check the results
+
+```{r}
+result_summary <- summary(select(raw_data, glucose_baseline, tc_baseline, hdl_baseline, ldl_baseline, tg_baseline))
+```
+
+```{r}
+result_summary
+```
+RESULT: Now, all the cardiometabolic markers values are values from fasting state. 
+
+
+```{r}
+############################3) Exract data based on criteria##################
+# Obtain:
+# a) patients who are >=18 (age)
+# b) patients with >= 10 year FU (2007 - 2010 recruitment yr)
+# c) healthy patients (stroke and heart disease = 2)
+# c) Extract features with NA <30%
+
+#a) Extract patients with at least 18 years old AND 
+# Extract patients recruit from 2007 - 2010 (10 yrs follow up)
+common_row <- which(raw_data$age >= 18 &
+                      raw_data$recruitment_year %in% c(2007,2008,2009,2010) &
+                      raw_data$stroke_b == 2 &
+                      raw_data$heartdisease_b == 2)
+
+#Results: common_row, N=10044
+
+#b) Check NA & extract features with <30%
+  ##  Extract features metadata
+  allMeta_list <- read.csv("features_REDISCOVER.csv", header = T)
+  feats_list <- allMeta_list$Variables[which(allMeta_list$Types == "features")]
+
+  ## Check NA and compile as data frames
+  NA_result <- data.frame(sum_NA = colSums(is.na(raw_data[,feats_list])))
+  NA_result$perc_NA <- round(NA_result/nrow(raw_data) *100,2)
+  names(NA_result)[2] <- "perc_NA"
+  #NA_result <- NA_result[order(NA_result$perc_NA),]
+  NA_result <- cbind(features=rownames(NA_result),NA_result)
+  # rownames(NA_result) <- NULL 
+    
+  ## Remove features with NA more than 30%
+  missing_idx <- NA_result$features[which(NA_result$perc_NA >= 30)] #col
+  feats_list_sel1 <- feats_list[!feats_list %in% missing_idx]
+  
+# Remove the relevant features
+sel_data <- raw_data[common_row,!names(raw_data) %in% missing_idx]
+write.csv(sel_data,"5_REDISCOVER_cleaned_withNA_Nov2023.csv", row.names = F)
+```
+
+
+
+```{r}
+############################4) Removes near zero variance###########################
+nzv_info <- nearZeroVar(sel_data[,feats_list_sel1],saveMetrics = T)
+nzv_fet <- rownames(nzv_info)[grep("TRUE",nzv_info$nzv)]
+sel_data_nzr <- sel_data[,!names(sel_data) %in% nzv_fet]
+feats_list_sel2 <- feats_list[!feats_list %in% c(missing_idx,nzv_fet)]
+
+############################4) Extract complete cases ###########################
+sel_data_compl <- sel_data_nzr[complete.cases(sel_data_nzr[,feats_list_sel2]),]
+summary(sel_data_compl)
+write.csv(sel_data_compl, "6_REDISCOVER_cleaned_noNA_noNZV_Nov2023.csv", row.names = F)
+```
+
+
+
+
